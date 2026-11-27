@@ -6,6 +6,7 @@ from typing import Any, Optional, Tuple
 
 from .elkbledom import BLEDOMInstance
 from .const import DOMAIN, EFFECTS, EFFECTS_list, EFFECTS_MAP, EFFECTS_LIST_MAP, CONF_EFFECTS_CLASS
+from .christmas import ANIMATIONS as CHRISTMAS_ANIMATIONS, CHRISTMAS_EFFECTS
 
 from homeassistant.const import CONF_MAC, CONF_COLOR_TEMP
 from homeassistant.helpers import config_validation as cv
@@ -129,6 +130,14 @@ class BLEDOMLight(RestoreEntity, LightEntity):
     @property
     def effect_list(self):
         """Return list of available effects for this model."""
+        effects = self._device_effect_list()
+        if self._instance.segments:
+            # Christmas patterns and animations built from segment colors
+            return [*effects, *CHRISTMAS_EFFECTS]
+        return effects
+
+    def _device_effect_list(self):
+        """Effects built into the controller."""
         # First check if user has manually configured effects class
         effects_class_name = self._get_configured_effects_class()
         if effects_class_name:
@@ -342,6 +351,8 @@ class BLEDOMLight(RestoreEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         LOGGER.debug(f"Params turn on: {kwargs} color mode: {self._attr_color_mode}")
+        kwargs = dict(kwargs)
+        was_on = bool(self.is_on)
         if not self.is_on:
             await self._instance.turn_on()
             if self._instance.reset:
@@ -413,6 +424,26 @@ class BLEDOMLight(RestoreEntity, LightEntity):
             if current_brightness and current_brightness != 255:
                 await self._instance.set_brightness(current_brightness)
             self._attr_effect = None
+
+        if (
+            ATTR_EFFECT in kwargs
+            and kwargs[ATTR_EFFECT] in CHRISTMAS_EFFECTS
+            and self._instance.segments
+        ):
+            # Segment-based Christmas pattern or animation
+            requested_effect = kwargs.pop(ATTR_EFFECT)
+            await self._instance.set_christmas_effect(requested_effect)
+            self._attr_effect = requested_effect
+        elif (
+            not was_on
+            and not any(k in kwargs for k in (ATTR_EFFECT, ATTR_RGB_COLOR, ATTR_WHITE,
+                                              ATTR_COLOR_TEMP_KELVIN, CONF_COLOR_TEMP))
+            and self._attr_effect in CHRISTMAS_ANIMATIONS
+            and self._instance.segments
+            and not self._instance.animating
+        ):
+            # Turning back on: resume the animation that turning off stopped
+            await self._instance.set_christmas_effect(self._attr_effect)
 
         if ATTR_EFFECT in kwargs:
             requested_effect = kwargs[ATTR_EFFECT]

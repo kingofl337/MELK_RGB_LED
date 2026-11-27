@@ -57,6 +57,7 @@ This integration currently supports the following device models:
 - **MELK-OF10**
 - **MELK-OG10**
 - **MELK-OA21**
+- **MELK-OF21** (Lotus Lamp X, 28 segments; adds Christmas segment effects, see below)
 - **LEDBLE**
 - **LEDBLE-02** (star projectors; adds flicker motor on/off, mode and speed)
 - **LED-**
@@ -240,6 +241,41 @@ Follow the [Installation](#-installation) instructions above.
 Your LED device is now available as a `light` entity in Home Assistant!
 
 ---
+
+## MELK-OF21 (Lotus Lamp X) and Christmas effects
+
+`MELK-OF21` strips are detected from their Bluetooth name (e.g. `MELK-OF21   8F`). The commands
+were decoded from Android HCI snoop logs of the Lotus Lamp X app:
+
+| Command | Bytes |
+| --- | --- |
+| Login (clock + query, sent on connect) | `7E 06 83 hh mm ss weekday 00 EF`, `7E 07 37 FF FF FF 00 FF EF` |
+| Power on / off | `7E 07 04 FF 00 01 02 01 EF` / `7E 07 04 00 00 00 02 01 EF` |
+| Color | `7E 07 05 03 RR GG BB 10 EF` |
+| Brightness 0–100 % | `7E 04 01 PP 01 FF 02 01 EF` |
+| Built-in effect | `7E 07 03 <id> 06 FF FF 00 EF` |
+| Segment colors | `7E 07 37 <n> 00 01 01 00 EF`, `7E 32 <3n> 00 CK_HI CK_LO FF FF EF`, n/2 × `7E 33 R G B R G B <index>`, `7E 34 00 00 64 FF FF FF EF` |
+
+`CK` is the 16-bit sum of every byte of the `7E 32` packet (without CK), the `7E 33` packets and
+the `7E 34` packet.
+
+Models with a `"segments"` count in `models.json` get extra effects built from segment colors:
+
+- Static: **Candy cane**, **Red & green**, **Red, green & white**, **Classic multicolor**,
+  **Gold & white**, **Warm white**, **Winter ice**
+- Animated by Home Assistant (a new segment table every 1.5–2.5 s): **Candy cane chase**,
+  **Christmas chase**, **Multicolor chase**, **Christmas twinkle**, **Warm white twinkle**,
+  **Red & green flip**
+
+Animations keep the Bluetooth connection open. Choosing a color, a built-in effect or turning the
+strip off stops them; turning it back on resumes the last animation.
+
+A model can also define its own `"login"` sequence in `models.json` (placeholders `H`, `M`, `S`
+and `W` are replaced with the current time and ISO weekday); otherwise MELK devices get the
+default `7E 07 83` / `7E 04 04` login.
+
+`tests/test_melk_of21.py` checks the commands and segment tables against captured packets
+(`python tests/test_melk_of21.py`).
 
 ## Troubleshooting
 

@@ -385,6 +385,27 @@ class Model:
             return self._models[internal_key].get("commands", {}).get("query")
         return None
     
+    def get_segments(self, internal_key: str) -> int:
+        """Number of individually colorable segments (0 = no segment support)."""
+        if internal_key in self._models:
+            return int(self._models[internal_key].get("segments", 0) or 0)
+        return 0
+
+    def get_login_cmds(
+        self, internal_key: str, hour: int, minute: int, second: int, day_of_week: int
+    ) -> Optional[List[List[int]]]:
+        """Model-specific login sequence, or None to use the default MELK login.
+
+        Placeholders: "H", "M", "S" = current time, "W" = ISO day of week (1 = Monday).
+        """
+        if internal_key not in self._models:
+            return None
+        login = self._models[internal_key].get("login")
+        if not login:
+            return None
+        values = {"H": hour, "M": minute, "S": second, "W": day_of_week}
+        return [[values.get(x, x) if isinstance(x, str) else x for x in cmd] for cmd in login]
+
     def get_sync_time_cmd(self, internal_key: str, hour: int, minute: int, second: int, day_of_week: int) -> List[int]:
         """Get sync time command (same for all models)"""
         return [0x7e, 0x00, 0x83, hour, minute, second, day_of_week, 0x00, 0xef]
