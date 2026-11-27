@@ -96,20 +96,22 @@ def test_christmas_effects():
 def test_rg_fade():
     anim = christmas.ANIMATIONS["R+G Fade"]
     assert anim.kind == "fade" and "R+G Fade" in christmas.CHRISTMAS_EFFECTS
-    steps = [christmas.fade_step(anim, s) for s in range(4 * anim.steps + 1)]
-    colors = [c for c, _ in steps]
+    n = anim.steps
+    steps = [christmas.fade_step(anim, s) for s in range(4 * n + 1)]
+    index = [i for i, _ in steps]
     levels = [lvl for _, lvl in steps]
-    # red rises to full and falls back, then green does the same
-    assert colors[: 2 * anim.steps] == [christmas.RED] * (2 * anim.steps)
-    assert colors[2 * anim.steps: 4 * anim.steps] == [christmas.GREEN] * (2 * anim.steps)
-    assert levels[0] == 0 and levels[anim.steps] == 1 and levels[2 * anim.steps] == 0
-    assert levels[: anim.steps + 1] == sorted(levels[: anim.steps + 1])
+    # full, dark, full, dark, full; the pattern swaps at each dark point
+    assert [levels[k * n] for k in range(5)] == [1, 0, 1, 0, 1]
+    assert index[:n] == [0] * n and index[n:3 * n] == [1] * (2 * n) and index[3 * n] == 0
+    assert levels[: n + 1] == sorted(levels[: n + 1], reverse=True)
+    # segments alternate red and green, and swap
+    assert christmas.frame_for("R+G Fade", 0, 28)[:2] == [christmas.RED, christmas.GREEN]
+    assert christmas.frame_for("R+G Fade", 2 * n, 28)[:2] == [christmas.GREEN, christmas.RED]
     # brightness commands the fade sends stay within 1-100 %
     for _, level in steps:
         percent = max(1, round(level * 100))
         cmd = model.get_brightness_cmd(KEY, math.ceil(percent * 255 / 100))
         assert cmd[3] == percent
-    assert christmas.frame_for("R+G Fade", anim.steps, 28)[0] == christmas.RED
 
 
 if __name__ == "__main__":

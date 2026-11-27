@@ -266,9 +266,10 @@ Models with a `"segments"` count in `models.json` get extra effects built from s
 - Animated by Home Assistant (a new segment table every 1.5–2.5 s): **Candy cane chase**,
   **Christmas chase**, **Multicolor chase**, **Christmas twinkle**, **Warm white twinkle**,
   **Red & green flip**
-- **R+G Fade**: the whole strip fades up and down in red, then in green. It uses the strip's own
-  color and brightness commands (one packet per step), so it stays smooth on a weak connection;
-  the strip's brightness is restored when the fade stops
+- **R+G Fade**: segments alternate red and green; the strip fades out, the colors swap while it
+  is dark, and it fades back in. The fade uses the strip's own brightness command (one packet
+  per step) and the segment table is only rewritten at the dark point, so it stays smooth on a
+  weak connection; the strip's brightness is restored when the fade stops
 
 Every device also gets an **Effect** dropdown entity that mirrors its light's effect list and
 current effect, so effects can be picked from the device page, a dashboard or an automation.

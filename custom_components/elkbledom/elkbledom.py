@@ -575,17 +575,21 @@ class BLEDOMInstance:
             step += 1
 
     async def _animate_fade(self, name: str) -> None:
-        """Fade with the strip's own color and brightness commands (one packet per step)."""
+        """Fade with the strip's own brightness command (one small packet per step).
+
+        The segment pattern is only rewritten when it changes, which happens while the
+        strip is at its darkest, so the ~1 s segment table write is not visible.
+        """
         animation = christmas.ANIMATIONS[name]
         step = 0
         failures = 0
-        color = None
+        shown = None
         while True:
-            rgb, level = christmas.fade_step(animation, step)
+            index, level = christmas.fade_step(animation, step)
             try:
-                if rgb != color:
-                    await self._write(self._model.get_color_cmd(self._model_name, *rgb))
-                    color = rgb
+                if index != shown:
+                    await self.set_segments(christmas.repeat(animation.frames[index], self.segments))
+                    shown = index
                 percent = max(1, round(level * 100))
                 # round up: the model turns 0-255 back into a percent by truncating
                 await self._write(
@@ -596,7 +600,7 @@ class BLEDOMInstance:
                 raise
             except Exception as err:  # keep fading through short dropouts
                 failures += 1
-                color = None
+                shown = None
                 LOGGER.debug("%s: fade step failed (%d): %s", self.name, failures, err)
                 if failures >= 5:
                     LOGGER.warning("%s: stopping %s, strip unreachable", self.name, name)
