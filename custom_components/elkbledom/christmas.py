@@ -59,9 +59,11 @@ ANIMATIONS: dict[str, Animation] = {
     "Christmas twinkle": Animation("twinkle", [RED, GREEN], interval=1.5),
     "Warm white twinkle": Animation("twinkle", [WARM_WHITE], interval=1.5, sparkle_share=0.2),
     "Red & green flip": Animation("alternate", [], interval=2.5, frames=[[RED, GREEN], [GREEN, RED]]),
-    # Whole strip fades up and down in red, then in green. Uses the strip's own color and
-    # brightness commands (one small packet per step) instead of segment tables.
-    "R+G Fade": Animation("fade", [RED, GREEN], interval=0.2, steps=12),
+    # Segments alternate red, green. The whole strip fades out with its own brightness
+    # command (one small packet per step), the colors swap while it is dark, and it fades
+    # back in. A segment table takes ~1 s to send, so it is only written at the dark point.
+    "R+G Fade": Animation("fade", [], interval=0.1, steps=20,
+                          frames=[[RED, GREEN], [GREEN, RED]]),
 }
 
 CHRISTMAS_EFFECTS: list[str] = [*PATTERNS, *ANIMATIONS]
@@ -71,13 +73,17 @@ def repeat(pattern: list[RGB], n: int, offset: int = 0) -> list[RGB]:
     return [pattern[(i + offset) % len(pattern)] for i in range(n)]
 
 
-def fade_step(anim: Animation, step: int) -> tuple[RGB, float]:
-    """Color and brightness level (0-1) for a fade animation at `step`."""
-    cycle = 2 * anim.steps  # up then down
-    color = anim.colors[(step // cycle) % len(anim.colors)]
-    pos = step % cycle
-    level = (pos if pos <= anim.steps else cycle - pos) / anim.steps
-    return color, level * level  # squared: looks even to the eye
+def fade_step(anim: Animation, step: int) -> tuple[int, float]:
+    """Pattern index and brightness level (0-1) for a fade animation at `step`.
+
+    Each cycle starts at full brightness, fades out, then fades back in; the next
+    pattern is shown from the dark point on.
+    """
+    cycle = 2 * anim.steps
+    turn, pos = divmod(step, cycle)
+    level = abs(anim.steps - pos) / anim.steps  # 1 -> 0 -> 1
+    index = (turn + (pos >= anim.steps)) % len(anim.frames)
+    return index, level * level  # squared: looks even to the eye
 
 
 def frame_for(name: str, step: int, n: int, rng: random.Random | None = None) -> list[RGB]:
@@ -90,8 +96,8 @@ def frame_for(name: str, step: int, n: int, rng: random.Random | None = None) ->
     if anim.kind == "alternate":
         return repeat(anim.frames[step % len(anim.frames)], n)
     if anim.kind == "fade":
-        color, level = fade_step(anim, step)
-        return repeat([tuple(round(c * level) for c in color)], n)
+        index, level = fade_step(anim, step)
+        return repeat([tuple(round(c * level) for c in color) for color in anim.frames[index]], n)
     if anim.kind == "twinkle":
         rng = rng or random.Random()
         frame = repeat(anim.colors, n)
