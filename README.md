@@ -57,6 +57,7 @@ This integration currently supports the following device models:
 - **MELK-OF10**
 - **MELK-OG10**
 - **MELK-OA21**
+- **MELK-OF21** (Lotus Lamp X)
 - **LEDBLE**
 - **LEDBLE-02** (star projectors; adds flicker motor on/off, mode and speed)
 - **LED-**

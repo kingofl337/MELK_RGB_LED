@@ -193,6 +193,9 @@ class BLEDOMInstance:
         
         # New: Brightness mode configuration
         self._brightness_mode = "auto"  # auto, rgb, native
+
+        # True when the model's own login sequence was used (see models.json "login")
+        self._custom_login = False
         
 
         try:
@@ -763,10 +766,21 @@ class BLEDOMInstance:
                     
                     if temp_write_uuid:
                         LOGGER.info("%s: Executing login sequence...", self.name)
-                        await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x07, 0x83]), response=False)
-                        await asyncio.sleep(1)
-                        await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x04, 0x04]), response=False)
-                        await asyncio.sleep(1)
+                        now = datetime.datetime.now()
+                        login_cmds = self._model.get_login_cmds(
+                            self._model_name, now.hour, now.minute, now.second, now.isoweekday()
+                        )
+                        self._custom_login = bool(login_cmds)
+                        if login_cmds:
+                            # Model-specific login, e.g. the clock + query the vendor app sends
+                            for cmd in login_cmds:
+                                await client.write_gatt_char(temp_write_uuid, bytes(cmd), response=False)
+                                await asyncio.sleep(0.1)
+                        else:
+                            await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x07, 0x83]), response=False)
+                            await asyncio.sleep(1)
+                            await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x04, 0x04]), response=False)
+                            await asyncio.sleep(1)
                         LOGGER.info("%s: Login sequence completed", self.name)
                     else:
                         LOGGER.warning("%s: Could not find write UUID for login procedure", self.name)
@@ -825,7 +839,7 @@ class BLEDOMInstance:
             # prefix) which switches the strip off.  Re-send power-on when the
             # requested state is on, otherwise later colour/brightness writes
             # go to a strip that stays dark while HA reports it as on.
-            if self._is_on and (
+            if self._is_on and not self._custom_login and (
                 self._device.name.lower().startswith("melk")
                 or self._device.name.lower().startswith("modelx")
             ):
