@@ -19,6 +19,8 @@ from homeassistant.components.bluetooth import async_discovered_service_info, as
 from home_assistant_bluetooth import BluetoothServiceInfo
 
 from .model import Model
+from . import christmas
+import random
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +40,9 @@ ELK_BLEDOB_COMMAND_SETTLE_TIME = 0.1
 # off, and an effect followed at once by its speed keeps the old color (#157).
 # The same writes 250-500 ms apart are all applied.
 ELK_BLEDDM_COMMAND_SETTLE_TIME = 0.3
+
+# Pause between the packets of a segment table (the Lotus Lamp X app uses 60-90 ms)
+SEGMENT_WRITE_GAP = 0.05
 WrapFuncType = TypeVar("WrapFuncType", bound=Callable[..., Any])
 
 def retry_bluetooth_connection_error(func: WrapFuncType) -> WrapFuncType:
@@ -193,6 +198,10 @@ class BLEDOMInstance:
         
         # New: Brightness mode configuration
         self._brightness_mode = "auto"  # auto, rgb, native
+
+        # Segment effects animated by Home Assistant (models with "segments")
+        self._animation_task: asyncio.Task | None = None
+        self._custom_login = False
         
 
         try:
@@ -359,6 +368,7 @@ class BLEDOMInstance:
     
     @retry_bluetooth_connection_error
     async def set_color_temp(self, value: int) -> None:
+        await self.stop_animation()
         if value > 100:
             value = 100
         warm = value
@@ -369,6 +379,7 @@ class BLEDOMInstance:
 
     @retry_bluetooth_connection_error
     async def set_color_temp_kelvin(self, value: int, brightness: int) -> None:
+        await self.stop_animation()
         # White colours are represented by colour temperature percentage from 0x0 to 0x64 from warm to cool
         # Warm (0x0) is only the warm white LED, cool (0x64) is only the white LED and then a mixture between the two
         self._color_temp_kelvin = value
@@ -423,6 +434,7 @@ class BLEDOMInstance:
 
     @retry_bluetooth_connection_error
     async def set_color(self, rgb: Tuple[int, int, int], is_base_color: bool = False) -> None:
+        await self.stop_animation()
         r, g, b = rgb
         color_cmd = self._model.get_color_cmd(self._model_name, r, g, b)
         await self._write(color_cmd)
@@ -433,6 +445,7 @@ class BLEDOMInstance:
 
     @retry_bluetooth_connection_error
     async def set_white(self, intensity: int) -> None:
+        await self.stop_animation()
         if intensity is None:
             intensity = 255  # Valor por defecto si no se especifica
         white_cmd = self._model.get_white_cmd(self._model_name, intensity)
@@ -502,10 +515,71 @@ class BLEDOMInstance:
 
     @retry_bluetooth_connection_error
     async def set_effect(self, value: int) -> None:
+        await self.stop_animation()
         effect = self._model.get_effect_cmd(self._model_name, value)
         LOGGER.debug("%s: Applying effect value 0x%02x", self.name, value)
         await self._write(effect)
         self._effect = value
+
+    @property
+    def segments(self) -> int:
+        """Number of individually colorable segments (0 = not supported)."""
+        return self._model.get_segments(self._model_name) if self._model else 0
+
+    @retry_bluetooth_connection_error
+    async def set_segments(self, cells: list[Tuple[int, int, int]]) -> None:
+        """Color every segment; one (r, g, b) per segment."""
+        commands = christmas.segment_table(cells)
+        async with self._command_lock:
+            await self._ensure_connected()
+            for cmd in commands:
+                await self._write_while_connected(cmd)
+                await asyncio.sleep(SEGMENT_WRITE_GAP)
+
+    async def set_christmas_effect(self, name: str) -> None:
+        """Show a Christmas pattern, or start an animated one."""
+        if not self.segments:
+            raise ValueError(f"{self._model_name} has no segment support")
+        await self.stop_animation()
+        await self.set_segments(christmas.frame_for(name, 0, self.segments))
+        if name in christmas.ANIMATIONS:
+            self._animation_task = self.loop.create_task(
+                self._animate(name), name=f"{self.name} {name}"
+            )
+
+    async def _animate(self, name: str) -> None:
+        animation = christmas.ANIMATIONS[name]
+        rng = random.Random()
+        step = 1
+        failures = 0
+        while True:
+            await asyncio.sleep(animation.interval)
+            try:
+                await self.set_segments(christmas.frame_for(name, step, self.segments, rng))
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # keep animating through short dropouts
+                failures += 1
+                LOGGER.debug("%s: animation frame failed (%d): %s", self.name, failures, err)
+                if failures >= 5:
+                    LOGGER.warning("%s: stopping %s, strip unreachable", self.name, name)
+                    return
+                await asyncio.sleep(5)
+            step += 1
+
+    async def stop_animation(self) -> None:
+        task, self._animation_task = self._animation_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @property
+    def animating(self) -> bool:
+        return self._animation_task is not None and not self._animation_task.done()
 
     @retry_bluetooth_connection_error
     async def send_raw(self, commands: list[list[int]], delay: float = 0.0) -> None:
@@ -612,6 +686,7 @@ class BLEDOMInstance:
 
     @retry_bluetooth_connection_error
     async def turn_off(self) -> None:
+        await self.stop_animation()
         cmd = self._model.get_turn_off_cmd(self._model_name)
         await self._write_power(cmd, False)
 
@@ -763,10 +838,21 @@ class BLEDOMInstance:
                     
                     if temp_write_uuid:
                         LOGGER.info("%s: Executing login sequence...", self.name)
-                        await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x07, 0x83]), response=False)
-                        await asyncio.sleep(1)
-                        await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x04, 0x04]), response=False)
-                        await asyncio.sleep(1)
+                        now = datetime.datetime.now()
+                        login_cmds = self._model.get_login_cmds(
+                            self._model_name, now.hour, now.minute, now.second, now.isoweekday()
+                        )
+                        self._custom_login = bool(login_cmds)
+                        if login_cmds:
+                            # Model-specific login, e.g. the clock + query the vendor app sends
+                            for cmd in login_cmds:
+                                await client.write_gatt_char(temp_write_uuid, bytes(cmd), response=False)
+                                await asyncio.sleep(0.1)
+                        else:
+                            await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x07, 0x83]), response=False)
+                            await asyncio.sleep(1)
+                            await client.write_gatt_char(temp_write_uuid, bytes([0x7e, 0x04, 0x04]), response=False)
+                            await asyncio.sleep(1)
                         LOGGER.info("%s: Login sequence completed", self.name)
                     else:
                         LOGGER.warning("%s: Could not find write UUID for login procedure", self.name)
@@ -825,7 +911,7 @@ class BLEDOMInstance:
             # prefix) which switches the strip off.  Re-send power-on when the
             # requested state is on, otherwise later colour/brightness writes
             # go to a strip that stays dark while HA reports it as on.
-            if self._is_on and (
+            if self._is_on and not self._custom_login and (
                 self._device.name.lower().startswith("melk")
                 or self._device.name.lower().startswith("modelx")
             ):
@@ -979,6 +1065,7 @@ class BLEDOMInstance:
     async def stop(self) -> None:
         """Stop the LEDBLE."""
         LOGGER.debug("%s: Stop", self.name)
+        await self.stop_animation()
         await self._execute_disconnect()
 
     async def _execute_timed_disconnect(self) -> None:
