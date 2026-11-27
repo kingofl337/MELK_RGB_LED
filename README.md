@@ -266,6 +266,12 @@ Models with a `"segments"` count in `models.json` get extra effects built from s
 - Animated by Home Assistant (a new segment table every 1.5–2.5 s): **Candy cane chase**,
   **Christmas chase**, **Multicolor chase**, **Christmas twinkle**, **Warm white twinkle**,
   **Red & green flip**
+- **R+G Fade**: the whole strip fades up and down in red, then in green. It uses the strip's own
+  color and brightness commands (one packet per step), so it stays smooth on a weak connection;
+  the strip's brightness is restored when the fade stops
+
+Every device also gets an **Effect** dropdown entity that mirrors its light's effect list and
+current effect, so effects can be picked from the device page, a dashboard or an automation.
 
 Animations keep the Bluetooth connection open. Choosing a color, a built-in effect or turning the
 strip off stops them; turning it back on resumes the last animation.

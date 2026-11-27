@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
-from homeassistant.core import HomeAssistant
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
@@ -22,6 +26,7 @@ async def async_setup_entry(
 ) -> None:
     instance = hass.data[DOMAIN][config_entry.entry_id]
     entities = [
+        BLEDOMEffectSelect(instance, "Effect " + config_entry.data["name"]),
         BLEDOMMicEffect(instance, "Mic Effect " + config_entry.data["name"], config_entry.entry_id),
         BLEDOMBrightnessModeSelect(instance, "Brightness Mode " + config_entry.data["name"], config_entry, config_entry.entry_id)
     ]
@@ -230,3 +235,81 @@ class BLEDOMMotorModeSelect(RestoreEntity, SelectEntity):
         if (last_state := await self.async_get_last_state()) is not None:
             if last_state.state in self._attr_options:
                 self._instance._motor_mode = last_state.state
+
+
+SOLID_COLOR = "Solid color"
+
+
+class BLEDOMEffectSelect(SelectEntity):
+    """Effect dropdown that mirrors the light entity's effect list and current effect.
+
+    Picking an option calls light.turn_on on the device's light, so it behaves exactly like
+    choosing the effect in the light's own dialog.
+    """
+
+    _attr_icon = "mdi:string-lights"
+    _attr_should_poll = False
+
+    def __init__(self, bledomInstance: BLEDOMInstance, attr_name: str) -> None:
+        self._instance = bledomInstance
+        self._attr_name = attr_name
+        self._attr_unique_id = self._instance.address + "_effect"
+        self._attr_options = [SOLID_COLOR]
+        self._attr_current_option = SOLID_COLOR
+        self._light_entity_id: str | None = None
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._instance.address)},
+            connections={(device_registry.CONNECTION_NETWORK_MAC, self._instance.address)},
+        )
+
+    async def async_added_to_hass(self) -> None:
+        self._find_light()
+
+    @callback
+    def _find_light(self, _now=None) -> None:
+        registry = entity_registry.async_get(self.hass)
+        self._light_entity_id = registry.async_get_entity_id("light", DOMAIN, self._instance.address)
+        if self._light_entity_id is None:
+            # The light platform may not be registered yet; try again shortly
+            self.async_on_remove(async_call_later(self.hass, 5, self._find_light))
+            return
+        self.async_on_remove(
+            async_track_state_change_event(self.hass, [self._light_entity_id], self._light_changed)
+        )
+        self._sync(self.hass.states.get(self._light_entity_id))
+        self.async_write_ha_state()
+
+    @callback
+    def _light_changed(self, event: Event) -> None:
+        self._sync(event.data.get("new_state"))
+        self.async_write_ha_state()
+
+    def _sync(self, state) -> None:
+        if state is None:
+            return
+        self._attr_options = [SOLID_COLOR, *(state.attributes.get("effect_list") or [])]
+        effect = state.attributes.get("effect")
+        self._attr_current_option = effect if effect in self._attr_options else SOLID_COLOR
+
+    @property
+    def available(self) -> bool:
+        if self._light_entity_id is None:
+            return False
+        state = self.hass.states.get(self._light_entity_id)
+        return state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+
+    async def async_select_option(self, option: str) -> None:
+        if self._light_entity_id is None:
+            raise HomeAssistantError("The light for this device was not found")
+        data = {"entity_id": self._light_entity_id}
+        if option == SOLID_COLOR:
+            state = self.hass.states.get(self._light_entity_id)
+            rgb = state.attributes.get("rgb_color") if state else None
+            data["rgb_color"] = list(rgb or (255, 255, 255))
+        else:
+            data["effect"] = option
+        await self.hass.services.async_call("light", "turn_on", data, blocking=True)

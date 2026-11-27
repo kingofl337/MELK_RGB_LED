@@ -20,6 +20,7 @@ from home_assistant_bluetooth import BluetoothServiceInfo
 
 from .model import Model
 from . import christmas
+import math
 import random
 
 LOGGER = logging.getLogger(__name__)
@@ -201,6 +202,7 @@ class BLEDOMInstance:
 
         # Segment effects animated by Home Assistant (models with "segments")
         self._animation_task: asyncio.Task | None = None
+        self._animation_name: str | None = None
         self._custom_login = False
         
 
@@ -541,11 +543,15 @@ class BLEDOMInstance:
         if not self.segments:
             raise ValueError(f"{self._model_name} has no segment support")
         await self.stop_animation()
-        await self.set_segments(christmas.frame_for(name, 0, self.segments))
-        if name in christmas.ANIMATIONS:
-            self._animation_task = self.loop.create_task(
-                self._animate(name), name=f"{self.name} {name}"
-            )
+        animation = christmas.ANIMATIONS.get(name)
+        if animation is not None and animation.kind == "fade":
+            runner = self._animate_fade(name)
+        else:
+            await self.set_segments(christmas.frame_for(name, 0, self.segments))
+            runner = self._animate(name) if animation is not None else None
+        if runner is not None:
+            self._animation_name = name
+            self._animation_task = self.loop.create_task(runner, name=f"{self.name} {name}")
 
     async def _animate(self, name: str) -> None:
         animation = christmas.ANIMATIONS[name]
@@ -568,14 +574,54 @@ class BLEDOMInstance:
                 await asyncio.sleep(5)
             step += 1
 
+    async def _animate_fade(self, name: str) -> None:
+        """Fade with the strip's own color and brightness commands (one packet per step)."""
+        animation = christmas.ANIMATIONS[name]
+        step = 0
+        failures = 0
+        color = None
+        while True:
+            rgb, level = christmas.fade_step(animation, step)
+            try:
+                if rgb != color:
+                    await self._write(self._model.get_color_cmd(self._model_name, *rgb))
+                    color = rgb
+                percent = max(1, round(level * 100))
+                # round up: the model turns 0-255 back into a percent by truncating
+                await self._write(
+                    self._model.get_brightness_cmd(self._model_name, math.ceil(percent * 255 / 100))
+                )
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # keep fading through short dropouts
+                failures += 1
+                color = None
+                LOGGER.debug("%s: fade step failed (%d): %s", self.name, failures, err)
+                if failures >= 5:
+                    LOGGER.warning("%s: stopping %s, strip unreachable", self.name, name)
+                    return
+                await asyncio.sleep(5)
+            step += 1
+            await asyncio.sleep(animation.interval)
+
     async def stop_animation(self) -> None:
         task, self._animation_task = self._animation_task, None
+        name, self._animation_name = self._animation_name, None
         if task is not None and not task.done():
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
+        fade = christmas.ANIMATIONS.get(name or "")
+        if fade is not None and fade.kind == "fade":
+            # The fade changed the strip's own brightness; put it back
+            try:
+                level = 255 if self._brightness_mode == "rgb" else (self._brightness or 255)
+                await self._write(self._model.get_brightness_cmd(self._model_name, level))
+            except Exception as err:
+                LOGGER.debug("%s: could not restore brightness: %s", self.name, err)
 
     @property
     def animating(self) -> bool:

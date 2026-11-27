@@ -5,6 +5,7 @@ Run with:  python -m pytest tests   (or: python tests/test_melk_of21.py)
 """
 import importlib.util
 import json
+import math
 import pathlib
 import sys
 import types
@@ -90,6 +91,25 @@ def test_christmas_effects():
     for name in christmas.CHRISTMAS_EFFECTS:
         table = christmas.segment_table(christmas.frame_for(name, 3, 28))
         assert len(table) == 17 and all(len(cmd) == 9 for cmd in table)
+
+
+def test_rg_fade():
+    anim = christmas.ANIMATIONS["R+G Fade"]
+    assert anim.kind == "fade" and "R+G Fade" in christmas.CHRISTMAS_EFFECTS
+    steps = [christmas.fade_step(anim, s) for s in range(4 * anim.steps + 1)]
+    colors = [c for c, _ in steps]
+    levels = [lvl for _, lvl in steps]
+    # red rises to full and falls back, then green does the same
+    assert colors[: 2 * anim.steps] == [christmas.RED] * (2 * anim.steps)
+    assert colors[2 * anim.steps: 4 * anim.steps] == [christmas.GREEN] * (2 * anim.steps)
+    assert levels[0] == 0 and levels[anim.steps] == 1 and levels[2 * anim.steps] == 0
+    assert levels[: anim.steps + 1] == sorted(levels[: anim.steps + 1])
+    # brightness commands the fade sends stay within 1-100 %
+    for _, level in steps:
+        percent = max(1, round(level * 100))
+        cmd = model.get_brightness_cmd(KEY, math.ceil(percent * 255 / 100))
+        assert cmd[3] == percent
+    assert christmas.frame_for("R+G Fade", anim.steps, 28)[0] == christmas.RED
 
 
 if __name__ == "__main__":
