@@ -62,7 +62,7 @@ ANIMATIONS: dict[str, Animation] = {
     # Segments alternate red, green. The whole strip fades out with its own brightness
     # command (one small packet per step), the colors swap while it is dark, and it fades
     # back in. A segment table takes ~1 s to send, so it is only written at the dark point.
-    "R+G Fade": Animation("fade", [], interval=0.1, steps=20,
+    "R+G Fade": Animation("fade", [], interval=0.1, steps=10,
                           frames=[[RED, GREEN], [GREEN, RED]]),
 }
 
